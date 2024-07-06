@@ -28,8 +28,8 @@ if [ -e "$config_file" ]; then
         # Kill all PIDs
         # exit 0
         kill -s 15 -1 && (sleep 10; kill -s 9 -1)
-    elif [ "$restart_count" -eq 5 ]; then
-        echo "Restart count is 5. Will not reset again."
+    elif [ "$restart_count" -eq 10 ]; then
+        echo "Restart count is 10. Will not reset again."
     fi
     initialize_or_modify_config $((failed_run_count + 1)) $restart_count
 

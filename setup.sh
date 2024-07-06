@@ -2,7 +2,6 @@
 
 # Get the directory of the setup script
 SCRIPTS_DIR="$PWD"
-echo $SCRIPTS_DIR
 # Define the interval for running the scripts (e.g., "0 4 * * *" for every day at 4 AM)
 INTERVAL="0 4 * * *"
 
