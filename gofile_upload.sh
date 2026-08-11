@@ -1,8 +1,5 @@
 #!/bin/bash
 #
-# Upload a file or a directory (recursively, preserving structure) to
-# gofile.io anonymously and print a single shareable link.
-#
 # Usage: ./gofile_upload.sh <file-or-directory>
 #
 # Known limitations:
@@ -35,16 +32,16 @@ target="${1:-}"
 # Strip trailing slash so relative-path stripping below is exact.
 target="${target%/}"
 
-# api_call METHOD URL [curl-args...]
-# Retries a couple of times on HTTP 429, checks status=="ok", prints the
-# response body and dies on any other failure.
+# MODE is "quiet" (suppress curl's progress meter) or "progress" (show it, for uploads).
 api_call() {
-    local method="$1" url="$2"
-    shift 2
+    local mode="$1" method="$2" url="$3"
+    shift 3
     local attempt body http_code
+    local curl_opts=(-S)
+    [[ "$mode" == quiet ]] && curl_opts+=(-s)
 
     for attempt in 1 2 3; do
-        body=$(curl -sS -X "$method" -w '\n%{http_code}' "$url" "$@")
+        body=$(curl "${curl_opts[@]}" -X "$method" -w '\n%{http_code}' "$url" "$@")
         http_code="${body##*$'\n'}"
         body="${body%$'\n'*}"
 
@@ -71,7 +68,7 @@ upload_file() {
     local args=(-F "file=@\"$path\"")
     [[ -n "$folder_id" ]] && args+=(-F "folderId=$folder_id")
     [[ -n "$token" ]] && args+=(-F "token=$token")
-    api_call POST "$UPLOAD_URL" "${args[@]}"
+    api_call progress POST "$UPLOAD_URL" "${args[@]}"
 }
 
 create_folder() {
@@ -79,7 +76,7 @@ create_folder() {
     local payload
     payload=$(jq -n --arg parentFolderId "$parent_id" --arg folderName "$name" \
         '{parentFolderId: $parentFolderId, folderName: $folderName}')
-    api_call POST "$API_URL/contents/createFolder" \
+    api_call quiet POST "$API_URL/contents/createFolder" \
         -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$payload"
 }
 
@@ -87,7 +84,7 @@ delete_content() {
     local content_id="$1" token="$2"
     local payload
     payload=$(jq -n --arg contentsId "$content_id" '{contentsId: $contentsId}')
-    api_call DELETE "$API_URL/contents" \
+    api_call quiet DELETE "$API_URL/contents" \
         -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$payload" || true
 }
 
@@ -96,7 +93,7 @@ update_attribute() {
     local payload
     payload=$(jq -n --arg attribute "$attribute" --arg attributeValue "$value" \
         '{attribute: $attribute, attributeValue: $attributeValue}')
-    api_call PUT "$API_URL/contents/$content_id/update" \
+    api_call quiet PUT "$API_URL/contents/$content_id/update" \
         -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$payload" || true
 }
 
@@ -108,11 +105,10 @@ fi
 
 [[ -d "$target" ]] || die "not a file or directory: $target"
 
-# --- Directory upload: recursive, structure-preserving ---
-
-# Collect all files up front (NUL-delimited for filename safety).
+# NUL-delimited for filename safety.
 mapfile -d '' -t all_files < <(find -H "$target" -type f -print0 | LC_ALL=C sort -z)
 [[ "${#all_files[@]}" -gt 0 ]] || die "no files found under $target"
+total="${#all_files[@]}"
 
 # Warn about internal symlinks, which -type f silently skips.
 while IFS= read -r -d '' link; do
@@ -128,7 +124,7 @@ else
     bootstrap_file="${all_files[0]}"
 fi
 
-echo "Uploading $(basename "$bootstrap_file") (initializing guest folder)..." >&2
+echo "[1/$total] Uploading $(basename "$bootstrap_file") (initializing guest folder)..." >&2
 response=$(upload_file "$bootstrap_file") || die "bootstrap upload failed"
 guest_token=$(jq -r '.data.guestToken' <<<"$response")
 root_folder_id=$(jq -r '.data.parentFolder' <<<"$response")
@@ -140,14 +136,15 @@ folder_ids["."]="$root_folder_id"
 
 bootstrap_rel="${bootstrap_file#"$target"/}"
 bootstrap_reuploaded=false
+uploaded=1
 if [[ "$bootstrap_rel" != "$(basename "$bootstrap_file")" ]]; then
-    # Bootstrap file was nested but got placed at the root; delete it here
-    # and let the main loop re-upload it into its correct subfolder.
+    # Nested bootstrap file landed at gofile's root; delete it so the main loop re-uploads it into its subfolder.
     echo "Removing misplaced bootstrap file to re-upload it into its subfolder..." >&2
     if ! delete_content "$bootstrap_file_id" "$guest_token" >/dev/null; then
         echo "Warning: could not delete misplaced bootstrap file; a stray duplicate of $(basename "$bootstrap_file") may remain at the gofile root" >&2
     fi
     bootstrap_reuploaded=true
+    uploaded=0  # the deleted upload frees slot 1 for the re-upload below
 fi
 
 sleep 0.2
@@ -157,6 +154,7 @@ for f in "${all_files[@]}"; do
         continue
     fi
 
+    (( ++uploaded ))
     rel="${f#"$target"/}"
     rel_dir=$(dirname "$rel")
 
@@ -179,7 +177,7 @@ for f in "${all_files[@]}"; do
         folder_id="${folder_ids[$rel_dir]}"
     fi
 
-    echo "Uploading $rel..." >&2
+    echo "[$uploaded/$total] Uploading $rel..." >&2
     upload_file "$f" "$folder_id" "$guest_token" >/dev/null || die "upload failed for '$rel'"
     sleep 0.2
 done
