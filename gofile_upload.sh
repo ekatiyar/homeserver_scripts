@@ -38,7 +38,11 @@ api_call() {
     shift 3
     local attempt body http_code
     local curl_opts=(-S)
-    [[ "$mode" == quiet ]] && curl_opts+=(-s)
+    if [[ "$mode" == quiet ]]; then
+        curl_opts+=(-s)
+    else
+        curl_opts+=(--no-silent --no-progress-bar --progress-meter)
+    fi
 
     for attempt in 1 2 3; do
         body=$(curl "${curl_opts[@]}" -X "$method" -w '\n%{http_code}' "$url" "$@")
@@ -98,6 +102,7 @@ update_attribute() {
 }
 
 if [[ -f "$target" ]]; then
+    echo "[1/1] Uploading $(basename "$target")..." >&2
     response=$(upload_file "$target") || die "upload failed"
     echo "$response" | jq -r '.data.downloadPage'
     exit 0
